@@ -165,6 +165,71 @@ pytest src/test_agents.py -v
 
 Benchmark cần in ra hai bảng: **Standard Benchmark** và **Long-Context Stress Benchmark**. Mỗi bảng so sánh Baseline với Advanced theo đủ 6 cột trong phần "Chỉ số benchmark cần hiểu".
 
+## Phân tích kết quả benchmark
+
+Kết quả offline hiện tại là:
+
+| Benchmark | Agent | Agent tokens only | Prompt tokens processed | Cross-session recall | Memory growth (bytes) | Compactions |
+|---|---|---:|---:|---:|---:|---:|
+| Standard | Baseline | 1803 | 15692 | 0.00 | 0 | 0 |
+| Standard | Advanced | 1785 | 25254 | 0.78 | 3172 | 0 |
+| Long-context stress | Baseline | 1127 | 26223 | 0.00 | 0 | 0 |
+| Long-context stress | Advanced | 393 | 15037 | 0.75 | 268 | 4 |
+
+Bốn kết luận chính, với số liệu đứng trước cơ chế giải thích:
+
+- **Advanced có recall tốt hơn Baseline.** Ở Standard Benchmark,
+  `Cross-session recall` của Baseline là **0.00**, còn Advanced là **0.78**;
+  ở Long-Context Stress Benchmark, hai giá trị tương ứng là **0.00** và
+  **0.75**. Cơ chế tạo ra chênh lệch này là
+  `extract_profile_updates()` trích fact ổn định, `_persist_updates()` ghi
+  fact vào `User.md`, rồi `_offline_response()` đọc lại profile khi câu hỏi
+  được gửi trong thread mới. Giới hạn là recall Advanced chưa đạt 1.00 vì
+  heuristic extraction không hiểu mọi cách diễn đạt, nên correction và câu
+  ghép vẫn cần được kiểm thử riêng.
+- **Advanced có thể tốn hơn ở hội thoại ngắn.** Ở Standard Benchmark,
+  `Agent tokens only` là **1803** với Baseline và **1785** với Advanced;
+  riêng `Prompt tokens processed` là **15692** và **25254**, tức Advanced
+  đang cao hơn **9562 token prompt** trong lần chạy này. Advanced mỗi lượt
+  còn mang theo `User.md` cùng summary/message context và cập nhật file,
+  trong khi hội thoại ngắn chưa đủ dài để compact bù lại chi phí persistent
+  memory; vì vậy “có thể tốn hơn” chủ yếu thể hiện ở prompt cost, dù output
+  tokens của lần chạy hiện tại hơi thấp hơn Baseline.
+- **Compact có lợi thế ở hội thoại dài.** Ở stress benchmark,
+  `Prompt tokens processed` của Baseline là **26223**, còn Advanced là
+  **15037**, giảm **11186 token**, trong khi `Compactions` là **0** và **4**
+  tương ứng. `CompactMemoryManager` chuyển message cũ thành summary và chỉ
+  giữ message gần nhất, nên compact tối ưu trực tiếp cột **Prompt tokens
+  processed**. Nó không đồng nghĩa với việc giảm `Agent tokens only`: trong
+  bảng này output tokens giảm từ **1127** xuống **393**, nhưng đó là kết quả
+  của response offline ngắn hơn, không phải chỉ số mà compact được thiết kế
+  để tối ưu.
+- **File memory tăng trưởng và có rủi ro tích lũy sai fact.** Ở Standard,
+  `Memory growth (bytes)` là **0** với Baseline và **3172** với Advanced; ở
+  stress benchmark, hai giá trị là **0** và **268**, với Advanced thực hiện
+  **4 compactions**. `User.md` tăng theo các fact được ghi và summary giữ
+  context cũ, nên file có thể phình theo thời gian hoặc prompt có thể đắt
+  hơn nếu ghi duplicate facts. Rủi ro thứ hai là một fact sai từ một lượt
+  nhiễu bị giữ lại lâu dài; confidence threshold và conflict handling trong
+  code được thêm để bỏ qua câu đùa/câu hỏi và thay fact cũ bằng correction
+  mới.
+
+- **Độ tin cậy:** Persistent memory cần conflict handling. Khi người dùng đính
+  chính nơi ở hoặc nghề nghiệp, fact mới phải thay thế fact cũ; các danh sách
+  như interests có thể merge. Summary chỉ nên giữ context hội thoại, không nên
+  là nơi duy nhất lưu facts dài hạn.
+- **Bonus confidence threshold:** Advanced chấm confidence cho candidate fact
+  trước khi ghi vào `User.md`. Câu khẳng định rõ như “mình đang làm MLOps
+  engineer” được nhận, còn câu hỏi, câu đùa hoặc thông tin chỉ dùng làm ví dụ
+  bị bỏ qua. Threshold này giảm nguy cơ profile ghi sai nhưng có trade-off là
+  một câu nói mơ hồ có thể không được lưu, vì vậy correction rõ ràng vẫn cần
+  được ưu tiên xử lý.
+
+Khi đọc bảng kết quả, cần nhìn cả ba chiều: recall, prompt cost và memory
+growth. Advanced tốt hơn khi cần continuity qua nhiều phiên hoặc khi context
+dài; Baseline đơn giản hơn và phù hợp làm control để đo chi phí của persistent
+memory.
+
 ## Cách dùng repo này
 
 Nếu các bạn là sinh viên:
